@@ -48,7 +48,9 @@ This does not enable CORS.
 1. Connect the existing Git repository and create a **new project**. Do not
    change or replace the existing website Vercel project.
 2. Set **Root Directory** to the repository root (the directory containing
-   `manage.py`, `requirements.txt`, and `pyproject.toml`).
+   `manage.py`, `requirements.txt`, and `pyproject.toml`). Do not select
+   `budget/`, `config/`, or the Flutter directory as the Vercel Root Directory:
+   Django and its package metadata are at the repository root.
 3. Use the Django framework preset/automatic detection. Do not add a separate
    build command or output directory. Vercel detects `manage.py`, installs
    `requirements.txt`, uses `config.wsgi:application`, and collects Django
@@ -63,6 +65,19 @@ The repository root is required because the API imports the existing `budget`
 app, Django project settings, forms, templates, services, and migrations.
 `.vercelignore` omits Flutter projects, the local SQLite database, local
 scripts, and other non-runtime assets from the deployment bundle.
+
+Both `requirements.txt` and `[project].dependencies` in `pyproject.toml` list
+the runtime packages. The project metadata makes Django available to Vercel's
+Python/Django settings-discovery step, which inspects `manage.py`; relying only
+on the later function dependency installation can fail with
+`DJANGO_SETTINGS_FAILED` / `No module named 'django'`.
+
+If that error persists after committing and redeploying these files, confirm
+that the Vercel deployment commit contains both the Django dependency
+declarations and that the project's Root Directory is the repository root.
+Check the install/build logs for a dependency installation failure before
+changing Python code. A Vercel environment variable alone cannot install
+Django into the settings-discovery interpreter.
 
 ## Safe pre-deployment checks
 
