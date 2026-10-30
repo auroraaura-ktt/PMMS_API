@@ -1,0 +1,41 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+Users & Admin Passwords.docx
+
+# Python and Django
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+*.sqlite3
+*.sqlite
+*.db
+media/
+staticfiles/
+coverage/
+*.log
+
+# Flutter and Android build output
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/ephemeral/
+**/Pods/
+**/.symlinks/
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Local deployment metadata and copied Git repositories
+.vercel/
+**/.git.backup/
