@@ -1,10 +1,62 @@
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.test import Client, TestCase
+from django.http import HttpResponse
+from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 
 from budget.models import Balance, BudgetCategory, BudgetMonth, DailyExpense, PocketUser, SubBalance
+from config.middleware import NativeCsrfOriginMiddleware
+
+
+class NativeCsrfOriginMiddlewareTests(TestCase):
+    def setUp(self):
+        self.received_origin = None
+
+        def capture_request(request):
+            self.received_origin = request.META.get("HTTP_ORIGIN")
+            return HttpResponse()
+
+        self.middleware = NativeCsrfOriginMiddleware(capture_request)
+        self.factory = RequestFactory()
+
+    def test_native_csrf_write_uses_its_own_https_origin(self):
+        request = self.factory.post(
+            "/api/v1/auth/login/",
+            HTTP_HOST="testserver",
+            HTTP_X_CSRFTOKEN="token",
+            secure=True,
+        )
+
+        self.middleware(request)
+
+        self.assertEqual(
+            self.received_origin, "https://testserver"
+        )
+
+    def test_browser_origin_is_preserved_for_csrf_validation(self):
+        request = self.factory.post(
+            "/api/v1/auth/login/",
+            HTTP_HOST="testserver",
+            HTTP_ORIGIN="https://attacker.example",
+            HTTP_X_CSRFTOKEN="token",
+            secure=True,
+        )
+
+        self.middleware(request)
+
+        self.assertEqual(self.received_origin, "https://attacker.example")
+
+    def test_missing_csrf_token_does_not_inject_origin(self):
+        request = self.factory.post(
+            "/api/v1/auth/login/",
+            HTTP_HOST="testserver",
+            secure=True,
+        )
+
+        self.middleware(request)
+
+        self.assertIsNone(self.received_origin)
 
 
 class FlutterSessionApiTests(TestCase):
@@ -44,6 +96,39 @@ class FlutterSessionApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["user"]["name"], "API User")
         self.assertEqual(response.json()["balances"][0]["name"], "Main Wallet")
+
+    def test_dashboard_omits_transaction_details_but_report_route_keeps_them(self):
+        self.login()
+        month = BudgetMonth.objects.create(
+            user=self.pocket, balance=self.balance, year=2026, month=8,
+            total_money=Decimal("50000"),
+        )
+        sub = SubBalance.objects.create(
+            budget_month=month, name="Savings", balance_amount=Decimal("10000"),
+            balance_date="2026-08-01",
+        )
+        category = BudgetCategory.objects.create(
+            budget_month=month, sub_balance=sub, name="Food",
+            estimated_amount=Decimal("0"),
+        )
+        DailyExpense.objects.create(
+            budget_month=month, sub_balance=sub, category=category,
+            expense_date="2026-08-02", amount=Decimal("2500"), note="Lunch",
+        )
+
+        dashboard = self.client.get(reverse("budget:api_dashboard")).json()
+        compact_report = dashboard["months"][0]["report"]
+        self.assertEqual(compact_report["sub_balance_rows"][0]["transaction_count"], 1)
+        self.assertEqual(compact_report["sub_balance_rows"][0]["transactions"], [])
+        self.assertEqual(compact_report["main_transactions"], [])
+
+        full_report = self.client.get(
+            reverse("budget:api_report", args=[month.id])
+        ).json()
+        self.assertEqual(
+            full_report["sub_balance_rows"][0]["transactions"][0]["note"],
+            "Lunch",
+        )
 
     def test_other_users_month_is_not_accessible(self):
         self.login()

@@ -125,7 +125,9 @@ class Api {
     const configuredApiBaseUrl = String.fromEnvironment('PMMS_API_BASE_URL');
     final base = configuredApiBaseUrl.isNotEmpty
         ? Uri.parse(configuredApiBaseUrl)
-        : Uri.base;
+        : kIsWeb
+        ? Uri.base
+        : Uri.parse('https://pmms-api-w6at.vercel.app/');
     return base.resolve(path);
   }
 
@@ -2609,6 +2611,57 @@ class ReportsScreen extends StatefulWidget {
 
 class _ReportsScreenState extends State<ReportsScreen> {
   int? selectedMonthId;
+  final Map<int, Map<String, dynamic>> reports = {};
+  final Set<int> loadingReports = {};
+  final Map<int, Object> reportErrors = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.months.isNotEmpty) {
+      selectedMonthId = widget.months.first['id'] as int;
+      _loadReport(selectedMonthId!);
+    }
+  }
+
+  Future<void> _loadReport(int monthId) async {
+    if (reports.containsKey(monthId) || loadingReports.contains(monthId)) {
+      return;
+    }
+    setState(() {
+      loadingReports.add(monthId);
+      reportErrors.remove(monthId);
+    });
+    try {
+      final report = await widget.api.get(
+        '/api/v1/main-balances/$monthId/report/',
+      );
+      if (mounted) {
+        setState(() {
+          reports[monthId] = report;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          reportErrors[monthId] = error;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          loadingReports.remove(monthId);
+        });
+      }
+    }
+  }
+
+  void _selectMonth(int? monthId) {
+    setState(() {
+      selectedMonthId = monthId;
+    });
+    if (monthId != null) _loadReport(monthId);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2618,7 +2671,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final month = widget.months
         .where((item) => item['id'] == selected)
         .firstOrNull;
-    final report = (month?['report'] as Map?)?.cast<String, dynamic>();
+    final report = selected == null ? null : reports[selected];
     return Scaffold(
       appBar: AppBar(
         title: const Text('Reports'),
@@ -2652,9 +2705,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     ),
                   )
                   .toList(),
-              onChanged: (value) => setState(() {
-                selectedMonthId = value;
-              }),
+              onChanged: _selectMonth,
+            ),
+          if (selected != null && loadingReports.contains(selected))
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          if (selected != null && reportErrors.containsKey(selected))
+            ErrorPanel(
+              message: reportErrors[selected].toString(),
+              onRetry: () {
+                setState(() {
+                  reportErrors.remove(selected);
+                });
+                _loadReport(selected);
+              },
             ),
           if (report != null && month != null) ...[
             const SectionTitle('Monthly Summary'),

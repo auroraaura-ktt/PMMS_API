@@ -14,7 +14,6 @@ environment (and Preview if previews will be used):
 
 | Variable | Value |
 |---|---|
-| `DJANGO_SETTINGS_MODULE` | `config.vercel_settings` |
 | `SECRET_KEY` | A new, randomly generated Django secret. Do not commit it or put it in Flutter. |
 | `DATABASE_URL` | The existing website's durable PostgreSQL connection URL. This must be the same database, not a new database or SQLite file. |
 | `ALLOWED_HOSTS` | The API's exact production hostname, such as `pmms-mobile-api.vercel.app`; comma-separate any custom domains. |
@@ -41,7 +40,11 @@ browser `Origin` or `Referer`. The API-only deployment handles that native
 request shape by supplying the request's own HTTPS origin only when a write
 includes the CSRF header and has neither browser header. Django still validates
 the CSRF cookie/header token; any supplied browser origin is checked normally.
-This does not enable CORS.
+This does not enable CORS. If native login gets HTTP 403 while the same
+CSRF-token-bearing request with the API's own `Origin` succeeds, check that
+`DJANGO_SETTINGS_MODULE=config.vercel_settings` is configured for the API
+project's Production environment and redeploy. The default website settings
+do not include the native-origin middleware.
 
 ## Vercel project setup
 
@@ -56,8 +59,9 @@ This does not enable CORS.
    `requirements.txt`, uses `config.wsgi:application`, and collects Django
    static files when `STATIC_ROOT` is configured.
 4. Add and verify the required environment variables above before deploying.
-   The environment variable `DJANGO_SETTINGS_MODULE` makes Vercel load the
-   API-only settings profile.
+   In the API Vercel project's Production (and Preview, if used) environment,
+   set `DJANGO_SETTINGS_MODULE=config.vercel_settings`. This must not be set on
+   the website project.
 5. Deploy to a preview first. Verify the API with HTTPS requests before
    promoting a production deployment or configuring Flutter.
 
@@ -103,7 +107,15 @@ reviewed against the actual Vercel domain and deployment policy. Do not run
 migrations against production merely to test deployment. The existing database
 must already have the required PMMS migrations applied.
 
-After Vercel provides a preview URL, test at least:
+The configured API URL supplied for Flutter is
+`https://pmms-api-w6at.vercel.app/`. A live unauthenticated smoke check returned
+HTTP 200 JSON from `/api/v1/csrf/` and HTTP 401 from `/api/v1/auth/me/`, as
+expected. This verifies those public/unauthenticated routes only; it does not
+verify login, account permissions, financial writes, or database consistency.
+Before relying on the service for production financial data, test those flows
+with a dedicated test account and a safe test dataset.
+
+For any additional preview deployment, test at least:
 
 - `GET /api/v1/csrf/` returns HTTP 200 and JSON with `csrfToken`.
 - `GET /api/v1/auth/me/` without a session returns HTTP 401 JSON.
@@ -118,12 +130,13 @@ HTTP endpoints are correct.
 
 ## Flutter
 
-Only after the API preview passes the HTTP and authenticated tests, build
-Flutter with the verified HTTPS origin:
+Build Flutter with the supplied API origin (or override it for another
+environment):
 
 ```powershell
-flutter build apk --release --dart-define=PMMS_API_BASE_URL=https://YOUR-VERIFIED-API-DOMAIN
+flutter build apk --release --dart-define=PMMS_API_BASE_URL=https://pmms-api-w6at.vercel.app/
 ```
 
-The Vercel URL has not yet been created or verified. Do not substitute a
-guessed URL in a release APK.
+Android builds use this URL by default; `PMMS_API_BASE_URL` overrides it.
+Flutter Web continues to use its same-origin base URL unless this define is
+provided.

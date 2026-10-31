@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from django.db.models import F, Sum
+from django.db.models import F, Prefetch, Sum
 from django.db.models.functions import Abs
 
 from budget.currency import to_mmk
@@ -100,7 +100,11 @@ def _get_total_actual_spent(
     return to_mmk(total)
 
 
-def generate_monthly_report(budget_month_id: int) -> MonthlyReport:
+def generate_monthly_report(
+    budget_month_id: int,
+    *,
+    include_transactions: bool = True,
+) -> MonthlyReport:
     """Compare each category budget estimate against actual spending."""
     budget_month = (
         BudgetMonth.objects.select_related("user")
@@ -118,14 +122,17 @@ def generate_monthly_report(budget_month_id: int) -> MonthlyReport:
     }
     custom_categories = [cat for cat in main_categories if cat.period_index is None]
 
-    main_expenses = list(
-        DailyExpense.objects.filter(
-            budget_month=budget_month,
-            sub_balance__isnull=True,
+    main_expenses_query = DailyExpense.objects.filter(
+        budget_month=budget_month,
+        sub_balance__isnull=True,
+    ).order_by("expense_date", "id")
+    if include_transactions:
+        main_expenses_query = main_expenses_query.select_related("category")
+    else:
+        main_expenses_query = main_expenses_query.only(
+            "category_id", "expense_date", "amount"
         )
-        .select_related("category")
-        .order_by("expense_date", "id")
-    )
+    main_expenses = list(main_expenses_query)
 
     # Main expenses are already loaded for the report payload. Reuse them for
     # category and period totals instead of issuing aggregate queries per item.
@@ -155,13 +162,28 @@ def generate_monthly_report(budget_month_id: int) -> MonthlyReport:
     # Prefetch each Sub Balance's categories and expenses once, then reuse those
     # rows for totals, counts, and transaction details.
     sub_balance_rows = []
-    for row in budget_month.sub_balances.prefetch_related(
-        "categories", "expenses__category"
-    ).all():
-        sub_expenses = [
-            expense for expense in row.expenses.all()
-            if expense.budget_month_id == budget_month.id
-        ]
+    sub_balances = budget_month.sub_balances
+    if include_transactions:
+        sub_balances = sub_balances.prefetch_related(
+            "categories", "expenses__category"
+        )
+    else:
+        report_expenses = DailyExpense.objects.filter(
+            budget_month_id=budget_month.id
+        ).only("budget_month_id", "sub_balance_id", "category_id", "amount")
+        sub_balances = sub_balances.prefetch_related(
+            "categories",
+            Prefetch("expenses", queryset=report_expenses, to_attr="_report_expenses"),
+        )
+    for row in sub_balances.all():
+        sub_expenses = (
+            [
+                expense for expense in row.expenses.all()
+                if expense.budget_month_id == budget_month.id
+            ]
+            if include_transactions
+            else row._report_expenses
+        )
         sub_actual_spent = to_mmk(sum(
             (abs(expense.amount) for expense in sub_expenses), Decimal("0")
         ))
@@ -204,7 +226,7 @@ def generate_monthly_report(budget_month_id: int) -> MonthlyReport:
                     "amount": expense.amount,
                 }
                 for expense in sub_expenses
-            ],
+            ] if include_transactions else [],
         })
 
     period_reports: list[CategoryComparison] = []
@@ -285,7 +307,7 @@ def generate_monthly_report(budget_month_id: int) -> MonthlyReport:
             "amount": expense.amount,
         }
         for expense in main_expenses
-    ]
+    ] if include_transactions else []
 
     return MonthlyReport(
         year=budget_month.year,

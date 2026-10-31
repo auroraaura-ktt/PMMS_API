@@ -46,6 +46,8 @@ class _Encoder(DjangoJSONEncoder):
 
 
 def _json(data, status=200):
+    if is_dataclass(data):
+        data = asdict(data)
     return JsonResponse(data, status=status, encoder=_Encoder)
 
 
@@ -126,7 +128,7 @@ def dashboard(request):
     months = BudgetMonth.objects.filter(user=pocket).select_related("balance")
     rows = []
     for month in months:
-        report = generate_monthly_report(month.id)
+        report = generate_monthly_report(month.id, include_transactions=False)
         rows.append({"id": month.id, "name": month.name or month.month_label,
                      "year": month.year, "month": month.month,
                      "monthLabel": month.month_label, "totalMoney": month.total_money,
