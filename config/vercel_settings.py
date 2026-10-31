@@ -56,7 +56,3 @@ MIDDLEWARE = [
         if middleware != "budget.middleware.AutoEmailMiddleware"
     ],
 ]
-MIDDLEWARE.insert(
-    MIDDLEWARE.index("django.middleware.csrf.CsrfViewMiddleware"),
-    "config.middleware.NativeCsrfOriginMiddleware",
-)

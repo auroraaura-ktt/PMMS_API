@@ -85,6 +85,27 @@ class FlutterSessionApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return self.csrf()
 
+    def test_native_https_login_accepts_csrf_without_browser_origin(self):
+        token = self.csrf()
+        response = self.client.post(
+            reverse("budget:api_login"),
+            {"username": "api-user", "password": "SafePass!284"},
+            HTTP_X_CSRFTOKEN=token,
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_browser_login_rejects_untrusted_origin(self):
+        token = self.csrf()
+        response = self.client.post(
+            reverse("budget:api_login"),
+            {"username": "api-user", "password": "SafePass!284"},
+            HTTP_X_CSRFTOKEN=token,
+            HTTP_ORIGIN="https://attacker.example",
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 403)
+
     def test_authentication_failure_is_json_401(self):
         response = self.client.get(reverse("budget:api_dashboard"))
         self.assertEqual(response.status_code, 401)

@@ -55,6 +55,7 @@ MIDDLEWARE = [
     "budget.middleware.AutoEmailMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "config.middleware.NativeCsrfOriginMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
 
     "django.contrib.auth.middleware.AuthenticationMiddleware",

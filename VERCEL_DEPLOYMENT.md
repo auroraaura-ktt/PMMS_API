@@ -36,15 +36,11 @@ scheduler against the shared records. The existing website retains its current
 scheduler.
 
 Native Flutter writes include Django's CSRF token header but do not send a
-browser `Origin` or `Referer`. The API-only deployment handles that native
-request shape by supplying the request's own HTTPS origin only when a write
-includes the CSRF header and has neither browser header. Django still validates
-the CSRF cookie/header token; any supplied browser origin is checked normally.
-This does not enable CORS. If native login gets HTTP 403 while the same
-CSRF-token-bearing request with the API's own `Origin` succeeds, check that
-`DJANGO_SETTINGS_MODULE=config.vercel_settings` is configured for the API
-project's Production environment and redeploy. The default website settings
-do not include the native-origin middleware.
+browser `Origin` or `Referer`. The shared settings supply the request's own
+origin only for a token-bearing API write with neither browser header. Django
+still validates the CSRF cookie/header token; any supplied browser origin is
+checked normally. This does not enable CORS. The behavior applies to both the
+website and API-only deployment settings.
 
 ## Vercel project setup
 
