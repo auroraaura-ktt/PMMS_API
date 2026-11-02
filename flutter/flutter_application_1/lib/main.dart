@@ -1,21 +1,107 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
+import 'firebase_options.dart';
 import 'services/http_client.dart';
+
+final FlutterLocalNotificationsPlugin _localNotifications =
+    FlutterLocalNotificationsPlugin();
+
+const AndroidNotificationChannel _pmmsNotificationChannel =
+    AndroidNotificationChannel(
+      'pmms_notifications',
+      'PMMS Notifications',
+      description: 'Notifications from Pocket Money Management System',
+      importance: Importance.high,
+    );
+
+Future<void> _initializeLocalNotifications({
+  DidReceiveNotificationResponseCallback? onNotificationResponse,
+}) async {
+  const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const darwinSettings = DarwinInitializationSettings(
+    requestAlertPermission: false,
+    requestBadgePermission: false,
+    requestSoundPermission: false,
+  );
+
+  const settings = InitializationSettings(
+    android: androidSettings,
+    iOS: darwinSettings,
+    macOS: darwinSettings,
+  );
+
+  await _localNotifications.initialize(
+    settings: settings,
+    onDidReceiveNotificationResponse: onNotificationResponse,
+  );
+
+  await _localNotifications
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >()
+      ?.createNotificationChannel(_pmmsNotificationChannel);
+}
+
+Future<void> _showPmmsNotification(RemoteMessage message) async {
+  final title =
+      message.notification?.title ??
+      message.data['title']?.toString() ??
+      'PMMS';
+
+  final body =
+      message.notification?.body ?? message.data['body']?.toString() ?? '';
+
+  if (title.trim().isEmpty && body.trim().isEmpty) return;
+
+  await _localNotifications.show(
+    id:
+        (message.messageId?.hashCode ?? DateTime.now().millisecondsSinceEpoch) &
+        0x7fffffff,
+    title: title,
+    body: body,
+    notificationDetails: const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'pmms_notifications',
+        'PMMS Notifications',
+        channelDescription: 'Notifications from Pocket Money Management System',
+        importance: Importance.high,
+        priority: Priority.high,
+      ),
+    ),
+    payload: jsonEncode(message.data),
+  );
+}
 
 final _pmmsThemeMode = ValueNotifier<ThemeMode>(ThemeMode.light);
 
-void main() => runApp(
-  ValueListenableBuilder<ThemeMode>(
-    valueListenable: _pmmsThemeMode,
-    builder: (_, mode, _) => PmmsApp(themeMode: mode),
-  ),
-);
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  runApp(
+    ValueListenableBuilder<ThemeMode>(
+      valueListenable: _pmmsThemeMode,
+      builder: (_, mode, _) => PmmsApp(themeMode: mode),
+    ),
+  );
+}
 
 const ink = Color(0xFF1F2937);
 const navy = Color(0xFF092D72);
@@ -318,11 +404,24 @@ class SessionCookieStorage {
       _channel.invokeMethod<void>('delete', {'key': key});
 }
 
+typedef PmmsPushRegistrationHandler = Future<void> Function(
+  String installationId,
+);
+
 class PmmsApp extends StatefulWidget {
-  PmmsApp({super.key, Api? api, this.themeMode = ThemeMode.light})
-    : api = api ?? Api(persistSession: true);
+  PmmsApp({
+    super.key,
+    Api? api,
+    this.themeMode = ThemeMode.light,
+    this.onPushRegistration,
+    this.onNotificationOpened,
+  }) : api = api ?? Api(persistSession: true);
+
   final Api api;
   final ThemeMode themeMode;
+  final PmmsPushRegistrationHandler? onPushRegistration;
+  final ValueChanged<Map<String, dynamic>>? onNotificationOpened;
+
   @override
   State<PmmsApp> createState() => _PmmsAppState();
 }
@@ -335,9 +434,14 @@ class _PmmsAppState extends State<PmmsApp> {
   bool showLogin = false;
   bool registering = false;
   bool adminLogin = false;
+  StreamSubscription<RemoteMessage>? _foregroundMessageSubscription;
+  StreamSubscription<RemoteMessage>? _notificationOpenedSubscription;
+  StreamSubscription<String>? _messagingRegistrationSubscription;
+
   @override
   void initState() {
     super.initState();
+    unawaited(_setupPushNotifications());
     api.onUnauthorized = _sessionExpired;
     api
         .restoreSession()
@@ -357,6 +461,157 @@ class _PmmsAppState extends State<PmmsApp> {
             });
           }
         });
+  }
+
+  Future<void> _setupPushNotifications() async {
+    if (!{
+      TargetPlatform.android,
+      TargetPlatform.iOS,
+    }.contains(defaultTargetPlatform)) {
+      return;
+    }
+
+    try {
+      if (Firebase.apps.isEmpty) return;
+
+      final messaging = FirebaseMessaging.instance;
+      await _initializeLocalNotifications(
+        onNotificationResponse: _handleLocalNotificationResponse,
+      );
+
+      final permission = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      if (permission.authorizationStatus == AuthorizationStatus.denied) {
+        debugPrint('PMMS notifications permission denied.');
+        return;
+      }
+      if (!mounted) return;
+
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        await messaging.setForegroundNotificationPresentationOptions(
+          alert: false,
+          badge: false,
+          sound: false,
+        );
+      }
+
+      _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen(
+        (message) => unawaited(_showForegroundNotification(message)),
+        onError: (Object error, StackTrace stackTrace) =>
+            _reportNotificationError(error, stackTrace, 'receiving a message'),
+      );
+      _notificationOpenedSubscription = FirebaseMessaging.onMessageOpenedApp
+          .listen(
+            (message) => _handleNotificationOpened(message.data),
+            onError: (Object error, StackTrace stackTrace) =>
+                _reportNotificationError(
+                  error,
+                  stackTrace,
+                  'opening a notification',
+                ),
+          );
+      _messagingRegistrationSubscription = messaging.onRegistered.listen(
+        _registerPushInstallation,
+        onError: (Object error, StackTrace stackTrace) =>
+            _reportNotificationError(
+              error,
+              stackTrace,
+              'registering for push notifications',
+            ),
+      );
+
+      await messaging.register();
+      final initialMessage = await messaging.getInitialMessage();
+      if (initialMessage != null) {
+        _handleNotificationOpened(initialMessage.data);
+      }
+    } catch (error, stackTrace) {
+      _reportNotificationError(
+        error,
+        stackTrace,
+        'initializing push notifications',
+      );
+    }
+  }
+
+  Future<void> _showForegroundNotification(RemoteMessage message) async {
+    try {
+      await _showPmmsNotification(message);
+    } catch (error, stackTrace) {
+      _reportNotificationError(error, stackTrace, 'showing a notification');
+    }
+  }
+
+  void _handleLocalNotificationResponse(NotificationResponse response) {
+    final payload = response.payload;
+    if (payload == null || payload.isEmpty) return;
+
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Notification payload must be an object.');
+      }
+      _handleNotificationOpened(decoded);
+    } catch (error, stackTrace) {
+      _reportNotificationError(
+        error,
+        stackTrace,
+        'reading a notification payload',
+      );
+    }
+  }
+
+  void _handleNotificationOpened(Map<String, dynamic> data) {
+    try {
+      widget.onNotificationOpened?.call(data);
+    } catch (error, stackTrace) {
+      _reportNotificationError(
+        error,
+        stackTrace,
+        'handling a notification tap',
+      );
+    }
+  }
+
+  Future<void> _registerPushInstallation(String installationId) async {
+    final handler = widget.onPushRegistration;
+    if (handler == null) return;
+
+    try {
+      await handler(installationId);
+    } catch (error, stackTrace) {
+      _reportNotificationError(
+        error,
+        stackTrace,
+        'saving the push registration',
+      );
+    }
+  }
+
+  void _reportNotificationError(
+    Object error,
+    StackTrace stackTrace,
+    String operation,
+  ) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'PMMS notifications',
+        context: ErrorDescription('while $operation'),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_foregroundMessageSubscription?.cancel());
+    unawaited(_notificationOpenedSubscription?.cancel());
+    unawaited(_messagingRegistrationSubscription?.cancel());
+    super.dispose();
   }
 
   void signedIn(Map<String, dynamic> value) => setState(() {
