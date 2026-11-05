@@ -36,6 +36,10 @@ coverage/
 *.jks
 *.keystore
 
+# Flutter applications are maintained outside this backend repository.
+/flutter/
+/flutter_ui/
+
 # Local deployment metadata and copied Git repositories
 .vercel/
 **/.git.backup/
